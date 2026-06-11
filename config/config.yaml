@@ -1,0 +1,101 @@
+# ============================================================
+# ZhuoDaoMedAssistant 全局配置
+# 移植到服务器只改本文件，不改代码：
+#   - 开发期：offline=false + llm.provider=openai_compatible（用 API）
+#   - 上线期：offline=true  + llm.provider=ollama/local（本地部署）
+# ============================================================
+
+# ---- 不联网总开关 ----
+# true 时在进程启动最早期 monkey-patch socket，拦截一切非本地出口，
+# 任何对外连接抛 OfflineViolationError，防止患者隐私静默外发。
+offline: false
+offline_allow_hosts:        # offline=true 时仅放行这些主机
+  - 127.0.0.1
+  - localhost
+
+# ---- 模块选择 (ASR/VAD/TTS 选具体实现；LLM 统一走下面 llm.provider) ----
+selected_module:
+  _enable_voice: true
+  ASR: SenseVoiceASR
+  VAD: SileroVAD
+  TTS: KokoroTTS
+
+# ---- LLM：多 provider 可切换 ----
+# 开发期用 API；移植服务器改 provider 即可，agent/医疗逻辑零改动。
+llm:
+  provider: openai_compatible   # openai_compatible | anthropic | ollama | local
+  temperature: 0.3              # 医疗场景偏保守
+  max_tokens: 384               # 语音播报宜短；文本模式可改大
+  openai_compatible:
+    # Gemini 的 OpenAI 兼容端点（也兼容 DeepSeek/Qwen/智谱，换 base_url+model 即可）
+    base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+    api_key: sk-a498f0b87c454b51bc3121a287bb0ea3
+    model: qwen3.5-35b-a3b
+  anthropic:
+    api_key: ${ANTHROPIC_API_KEY}
+    model: claude-opus-4-8
+  ollama:
+    base_url: http://127.0.0.1:11434/v1     # 本地 ollama，OpenAI 兼容
+    api_key: ollama                         # ollama 占位即可
+    model: qwen2.5:7b
+  local:
+    model_path: models/llm/qwen2.5-7b-instruct
+    device: cuda                            # auto | cpu | cuda
+
+# ---- 语音模块参数 ----
+ASR:
+  SenseVoiceASR:
+    model_dir: models/asr/SenseVoiceSmall
+    device: cuda                            # auto | cpu | cuda（默认 cuda）
+    language: zh
+VAD:
+  SileroVAD:
+    model_path: models/vad/silero_vad.onnx
+    threshold: 0.3
+    sampling_rate: 16000
+    min_silence_ms: 500
+    min_speech_ms: 250
+TTS:
+  KokoroTTS:
+    model_dir: models/tts/kokoro
+    repo_id: hexgrad/Kokoro-82M-v1.1-zh   # KPipeline 需要（本地权重已下到 model_dir）
+    voice: zf_001                          # 官方演示音色；全部见 models/tts/kokoro/voices/
+    speed: auto                            # auto=按句长调速(官方推荐)；或固定 0.9~1.1
+    device: cuda
+
+# ---- 实时语音循环（麦克风 / VAD 切句）----
+voice_loop:
+  input_gain: 4              # 4 会把底噪放大，易误触发 VAD
+  interrupt_on_speech: true   # 戴耳机时建议 false，避免 TTS 漏音被当成你说话
+  record: true                # 每轮对话保存录音到 record_dir
+  record_dir: data/recordings # 每次会话一个子目录
+  record_assistant: true      # 同时保存助手 TTS 音频
+  # input_device: 1            # 可选：指定麦克风设备号；启动日志里会打印 #N 名称
+  # debug_level_threshold: 100 # 调低可看到更弱的 mic 电平（默认 150）
+
+# ---- 数据存储 (本地 JSON，不联网) ----
+storage:
+  patients_dir: data/patients      # 每患者一个 {patient_id}.json
+  schedule_dir: data/schedules     # 康复提醒排期
+  dialogue_dir: data/dialogues     # 对话记忆（与正式病历严格隔离）
+  keep_backup: true                # 写入前备份旧文件
+  lock_timeout_sec: 5              # 文件锁超时
+
+# ---- 规则引擎 ----
+rules:
+  path: config/rules.yaml          # 康复训练规则库（医生维护，不碰代码）
+
+# ---- 本地 Agent ----
+agent:
+  system_prompt_file: config/system_prompt.txt
+  max_tool_rounds: 5               # function-calling 最大轮数，防死循环
+
+# ---- 可选本地 Web 界面 ----
+server:
+  host: 127.0.0.1                  # 仅绑本地，不对外
+  port: 8000
+
+# ---- 日志 ----
+log:
+  level: INFO
+  file: data/logs/app.log

@@ -1,0 +1,41 @@
+# ============================================================
+# ZhuoDaoMedAssistant 依赖清单
+# 分三档：核心(必装) / 语音(可选) / 本地LLM(可选)
+# 不联网部署时按需裁剪；语音与本地 LLM 仅在需要时安装。
+# ============================================================
+
+# ---------- 核心 (必装) ----------
+pyyaml>=6.0            # 读取 config.yaml / rules.yaml
+pydantic>=2.0         # 病历 schema 严格校验
+jsonschema>=4.0       # 工具 function-calling schema 校验
+
+# ---------- LLM provider 客户端 (按所选 provider 安装其一即可) ----------
+# openai_compatible / ollama 走 OpenAI 兼容 wire format
+openai>=1.0           # provider = openai_compatible | ollama
+# anthropic            # provider = anthropic（取消注释以启用）
+
+# ---------- optional-voice: 语音交互 (ASR / VAD / TTS) ----------
+# 不需要语音时可全部跳过，main.py --text 文本模式不依赖这些。
+# 以下为本机实测可离线跑通的组合（CPU）：
+# funasr               # SenseVoice ASR
+# torch                # funasr / kokoro 依赖
+# torchaudio           # funasr 读音频必需
+# onnxruntime          # silero-vad onnx 推理
+# kokoro>=0.8.2        # Kokoro 本地 TTS
+# misaki[zh]>=0.8.2    # Kokoro 中文分词/音素化
+# soundfile            # 音频读写
+# sounddevice          # 麦克风/扬声器 IO（实时语音才需要）
+# numpy                # 音频帧处理
+
+# ---------- optional-local-llm: 本地大模型部署 (移植服务器时启用) ----------
+# 开发期用 API（上面的 openai/anthropic 客户端）即可，无需安装这些
+# transformers         # provider = local，HF 权重加载
+# llama-cpp-python      # provider = local，GGUF 量化模型（显存友好）
+# 或本地起 ollama 服务，provider = ollama，无需额外 python 依赖
+
+# ---------- optional-server: 本地 Web 界面 ----------
+# fastapi
+# uvicorn
+
+# ---------- 测试 ----------
+pytest>=7.0

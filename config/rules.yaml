@@ -1,0 +1,131 @@
+# ============================================================
+# 康复训练规则库 (Rehabilitation Rule Base)
+#
+# 由康复科医生维护，无需改动任何代码。
+# 规则引擎逐条匹配患者病历的 conditions，命中后给出 recommend 的训练方案。
+# 这是系统的「确定性结论」来源——LLM 只负责把结论说成人话，不参与拍板。
+#
+# 匹配语义：
+#   - 同一条规则内多个 conditions 是 AND 关系（全部满足才命中）。
+#   - 条件值支持：
+#       精确值        diagnosis: 脑卒中
+#       多选(命中其一) affected_limb: [上肢, 下肢]
+#       数值比较       muscle_strength: "<=2"   (支持 < <= > >= ==)
+#       范围           age: "60-80"
+#   - priority 数字越大优先级越高；多条命中时取最高优先级（同级取靠前）。
+#   - 字段名必须来自病历数据层的受限字段集合（见 medical/repository.py），
+#     否则加载时报错，避免规则与病历字段漂移。
+#
+# 兜底：所有规则都不命中时，引擎返回 fallback（见文件末尾）。
+# ============================================================
+
+rules:
+  # ---------- 脑卒中 / 偏瘫 ----------
+  - name: 脑卒中-偏瘫早期-上肢被动训练
+    priority: 100
+    conditions:
+      diagnosis: 脑卒中
+      affected_limb: 上肢
+      muscle_strength: "<=2"      # 肌力 0-2 级，无主动收缩或仅微弱
+    recommend:
+      mode: 被动关节活动训练
+      frequency: 每日2次
+      duration_min: 20
+      intensity: 低
+      precautions:
+        - 需康复治疗师全程陪同
+        - 关节活动度以无痛范围为限
+      goal: 维持关节活动度，预防挛缩
+
+  - name: 脑卒中-偏瘫恢复期-上肢主动辅助训练
+    priority: 90
+    conditions:
+      diagnosis: 脑卒中
+      affected_limb: 上肢
+      muscle_strength: "3-4"      # 肌力 3-4 级，可抗部分阻力
+    recommend:
+      mode: 主动辅助关节活动训练
+      frequency: 每日2次
+      duration_min: 30
+      intensity: 中
+      precautions:
+        - 监测疲劳与代偿动作
+      goal: 提升肌力与协调，向主动训练过渡
+
+  - name: 脑卒中-偏瘫下肢-站立平衡训练
+    priority: 90
+    conditions:
+      diagnosis: 脑卒中
+      affected_limb: 下肢
+      muscle_strength: ">=3"
+      balance_level: ["差", "中"]
+    recommend:
+      mode: 站立平衡与重心转移训练
+      frequency: 每日1次
+      duration_min: 30
+      intensity: 中
+      precautions:
+        - 配备防跌倒保护
+        - 必要时使用平衡杠
+      goal: 改善静态/动态平衡，为步行做准备
+
+  # ---------- 脊髓损伤 ----------
+  - name: 脊髓损伤-不完全性-下肢负重训练
+    priority: 80
+    conditions:
+      diagnosis: 脊髓损伤
+      injury_completeness: 不完全性
+      affected_limb: 下肢
+      muscle_strength: ">=2"
+    recommend:
+      mode: 减重支持下步行训练
+      frequency: 每日1次
+      duration_min: 30
+      intensity: 中
+      precautions:
+        - 使用减重支持系统
+        - 监测自主神经反射异常
+      goal: 促进步行功能恢复
+
+  # ---------- 骨科 / 关节置换术后 ----------
+  - name: 膝关节置换术后-早期活动度训练
+    priority: 85
+    conditions:
+      diagnosis: 膝关节置换术后
+      post_op_day: "<=14"
+    recommend:
+      mode: 膝关节持续被动活动(CPM)+主动屈伸
+      frequency: 每日3次
+      duration_min: 20
+      intensity: 低
+      precautions:
+        - 控制疼痛与肿胀
+        - 活动度循序渐进
+      goal: 尽早恢复关节活动度，预防粘连
+
+  # ---------- 老年综合 ----------
+  - name: 老年-肌少症-抗阻训练
+    priority: 60
+    conditions:
+      diagnosis: 肌少症
+      age: ">=65"
+      muscle_strength: ">=3"
+    recommend:
+      mode: 渐进性抗阻训练
+      frequency: 每周3次
+      duration_min: 40
+      intensity: 中
+      precautions:
+        - 监测心率血压
+        - 避免屏气用力(Valsalva)
+      goal: 增加肌肉量与力量，改善日常活动能力
+
+# ---------- 兜底：无任何规则命中时 ----------
+fallback:
+  mode: 综合评估
+  frequency: 待定
+  intensity: 低
+  precautions:
+    - 现有病历信息不足以匹配标准康复方案
+    - 请康复医师进行详细功能评估后人工制定方案
+  goal: 完善评估，人工制定个体化方案
