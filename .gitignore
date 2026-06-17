@@ -25,3 +25,7 @@ data/recordings/
 # 密钥（绝不入库）
 .env
 *.key
+
+# 部署产物（按需重新生成）
+*.tar.gz
+deploy.log

@@ -9,19 +9,25 @@
   tools=[{name,description,input_schema}]，tool_use 块映射为统一 ToolCall。
 - local：本地推理占位（HF transformers / llama.cpp），移植服务器时填实现。
 
-每个 provider 构造时调用 net_guard.assert_local_endpoint 做 offline 早失败校验。
 依赖按需 import（未装某 SDK 时不影响用其他 provider）。
 """
 
 from __future__ import annotations
 
 import json
-from typing import Any, Iterator
+from typing import Any, Generator, Iterator
 
 from core.llm.base import LLMBase, LLMResponse, Message, ToolCall
-from core.net_guard import assert_local_endpoint
 
 __all__ = ["OpenAICompatibleLLM", "AnthropicLLM", "OllamaLLM", "LocalLLM"]
+
+_OPENAI_TOOL_CHOICE_STRINGS = frozenset({"auto", "none", "required"})
+
+
+def _openai_tool_choice(tool_choice: str) -> str | dict[str, Any]:
+    if tool_choice in _OPENAI_TOOL_CHOICE_STRINGS:
+        return tool_choice
+    return {"type": "function", "function": {"name": tool_choice}}
 
 
 # --------------------------------------------------------------------------- #
@@ -48,8 +54,6 @@ class OpenAICompatibleLLM(LLMBase):
                 "Use ${ENV_VAR_NAME} for environment variables, or provide a raw API key "
                 "string without ${}."
             )
-        # offline 早失败：端点必须本地（开发期 offline=false 时不限制）
-        assert_local_endpoint(base_url, what="LLM(openai_compatible) base_url")
         from openai import OpenAI  # 延迟导入
 
         self._client = OpenAI(base_url=base_url, api_key=api_key)
@@ -73,11 +77,7 @@ class OpenAICompatibleLLM(LLMBase):
         if tools:
             kwargs["tools"] = [_to_openai_tool(t) for t in tools]
             if tool_choice:
-                kwargs["tool_choice"] = (
-                    tool_choice
-                    if tool_choice in ("auto", "none")
-                    else {"type": "function", "function": {"name": tool_choice}}
-                )
+                kwargs["tool_choice"] = _openai_tool_choice(tool_choice)
         resp = self._client.chat.completions.create(**kwargs)
         choice = resp.choices[0].message
         calls: list[ToolCall] = []
@@ -118,6 +118,72 @@ class OpenAICompatibleLLM(LLMBase):
             if delta:
                 yield delta
 
+    def stream_chat_tools(
+        self,
+        messages: list[Message],
+        *,
+        system: str | None = None,
+        tools: list[dict] | None = None,
+        tool_choice: str | None = None,
+        max_tokens: int | None = None,
+    ) -> Generator[str, None, LLMResponse]:
+        """真流式 + 工具调用（语音低延迟关键路径，对齐百聆 chat_tool 思路）。
+
+        文本 token 一边到一边 yield（供 TTS 尽早开播）；
+        tool_call 增量按 index 聚合，流结束后拼成完整 ToolCall 列表 return。
+        """
+        kwargs: dict[str, Any] = {
+            "model": self.model,
+            "messages": _to_openai_messages(messages, system),
+            "temperature": self.temperature,
+            "max_tokens": max_tokens or self.max_tokens,
+            "stream": True,
+        }
+        if tools:
+            kwargs["tools"] = [_to_openai_tool(t) for t in tools]
+            if tool_choice:
+                kwargs["tool_choice"] = _openai_tool_choice(tool_choice)
+        stream = self._client.chat.completions.create(**kwargs)
+
+        text_parts: list[str] = []
+        acc: dict[int, dict] = {}  # index -> {"id","name","args"} 增量聚合
+        for chunk in stream:
+            if not chunk.choices:
+                continue
+            delta = chunk.choices[0].delta
+            if delta is None:
+                continue
+            if delta.content:
+                text_parts.append(delta.content)
+                yield delta.content
+            for tc in delta.tool_calls or []:
+                slot = acc.setdefault(tc.index, {"id": None, "name": None, "args": ""})
+                if tc.id:
+                    slot["id"] = tc.id
+                if tc.function is not None:
+                    if tc.function.name:
+                        slot["name"] = tc.function.name
+                    if tc.function.arguments:
+                        slot["args"] += tc.function.arguments
+
+        calls: list[ToolCall] = []
+        for idx in sorted(acc):
+            slot = acc[idx]
+            raw_args = slot["args"] or "{}"
+            try:
+                args = json.loads(raw_args)
+            except json.JSONDecodeError:
+                args = {}
+            calls.append(
+                ToolCall(
+                    id=slot["id"] or f"call_{idx}",
+                    name=slot["name"] or "",
+                    arguments=args,
+                    raw_arguments=raw_args,
+                )
+            )
+        return LLMResponse(text="".join(text_parts) or None, tool_calls=calls)
+
 
 class OllamaLLM(OpenAICompatibleLLM):
     """本地 ollama（OpenAI 兼容）。provider=ollama。读 config['ollama'] 段。"""
@@ -133,19 +199,14 @@ class OllamaLLM(OpenAICompatibleLLM):
 # Anthropic Claude
 # --------------------------------------------------------------------------- #
 class AnthropicLLM(LLMBase):
-    """Anthropic Claude 官方 SDK。provider=anthropic。
-
-    注意：anthropic 默认指向公网端点；offline=true 时必须在 config 配本地 base_url，
-    否则 net_guard 的 socket 兜底会拦截。开发期 offline=false 正常用 API。
-    """
+    """Anthropic Claude 官方 SDK。provider=anthropic。"""
 
     def __init__(self, config: dict) -> None:
         super().__init__(config)
         sub = config.get("anthropic", {})
         self.model = sub.get("model", "claude-opus-4-8")
         api_key = sub.get("api_key")
-        base_url = sub.get("base_url")  # offline 部署可指向本地兼容端点
-        assert_local_endpoint(base_url, what="LLM(anthropic) base_url")
+        base_url = sub.get("base_url")
         import anthropic  # 延迟导入
 
         kwargs: dict[str, Any] = {}

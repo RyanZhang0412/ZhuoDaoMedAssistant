@@ -8,6 +8,7 @@
 pyyaml>=6.0            # 读取 config.yaml / rules.yaml
 pydantic>=2.0         # 病历 schema 严格校验
 jsonschema>=4.0       # 工具 function-calling schema 校验
+pypinyin>=0.50        # 姓名拼音首字母生成患者 ID（卓小道 -> zxd001）
 
 # ---------- LLM provider 客户端 (按所选 provider 安装其一即可) ----------
 # openai_compatible / ollama 走 OpenAI 兼容 wire format
@@ -32,10 +33,6 @@ openai>=1.0           # provider = openai_compatible | ollama
 # transformers         # provider = local，HF 权重加载
 # llama-cpp-python      # provider = local，GGUF 量化模型（显存友好）
 # 或本地起 ollama 服务，provider = ollama，无需额外 python 依赖
-
-# ---------- optional-server: 本地 Web 界面 ----------
-# fastapi
-# uvicorn
 
 # ---------- 测试 ----------
 pytest>=7.0

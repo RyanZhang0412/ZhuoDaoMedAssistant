@@ -9,6 +9,8 @@
 from __future__ import annotations
 
 import json
+import re
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -80,6 +82,60 @@ class Scheduler:
         if found:
             self._save(patient_id, items)
         return found
+
+    # ---- 到期检查（语音空闲时主动播报用，对齐百聆 TaskManager 的"时间到了主动说"）----
+    def due_all(self, now: datetime | None = None) -> list[dict]:
+        """扫描全部患者排期，返回此刻到期且未播报过的提醒，并标记已播报。
+
+        时间格式支持：
+          - "YYYY-MM-DD HH:MM"   一次性提醒，触发后置 inactive
+          - "每天HH:MM" / "HH:MM" 每日重复（或 repeat 字段非空），每天最多触发一次
+        到期窗口 2 分钟：错过窗口不补播，避免重启后陈年提醒轰炸。
+        """
+        now = now or datetime.now()
+        fired: list[dict] = []
+        for path in self.dir.glob("*.json"):
+            patient_id = path.stem
+            items = self._load(patient_id)
+            changed = False
+            for it in items:
+                if not it.get("active", True):
+                    continue
+                if not self._is_due(it, now):
+                    continue
+                fired.append(dict(it))
+                it["last_fired"] = now.strftime("%Y-%m-%d %H:%M")
+                if not self._is_recurring(it):
+                    it["active"] = False
+                changed = True
+            if changed:
+                self._save(patient_id, items)
+        return fired
+
+    @staticmethod
+    def _is_recurring(item: dict) -> bool:
+        t = str(item.get("time", "")).strip()
+        return bool(item.get("repeat")) or "每天" in t or not re.search(r"\d{4}-\d{2}-\d{2}", t)
+
+    @staticmethod
+    def _is_due(item: dict, now: datetime) -> bool:
+        t = str(item.get("time", "")).strip()
+        m = re.search(r"(\d{1,2}):(\d{2})", t)
+        if not m:
+            return False
+        hh, mm = int(m.group(1)), int(m.group(2))
+        if not (0 <= hh < 24 and 0 <= mm < 60):
+            return False
+        date_m = re.search(r"(\d{4})-(\d{2})-(\d{2})", t)
+        if date_m:  # 一次性：日期+时间
+            target = datetime(
+                int(date_m.group(1)), int(date_m.group(2)), int(date_m.group(3)), hh, mm
+            )
+        else:  # 每日重复：今天的该时刻
+            if str(item.get("last_fired", "")).startswith(now.strftime("%Y-%m-%d")):
+                return False  # 今天已播报
+            target = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+        return 0 <= (now - target).total_seconds() < 120
 
 
 # --------------------------------------------------------------------------- #

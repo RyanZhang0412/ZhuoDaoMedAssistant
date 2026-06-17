@@ -10,16 +10,30 @@ transcribe 接收 16k 单声道 16-bit PCM bytes，转 float32 numpy 喂给 FunA
 from __future__ import annotations
 
 from core.asr.base import ASRBase, ASRResult
-from core.device import resolve_device
 
 __all__ = ["SenseVoiceASR"]
+
+
+def _resolve_device(device: str | None, *, default: str = "cuda") -> str:
+    """解析 config.yaml 的 device（auto|cpu|cuda）；auto 按是否有 CUDA 自动选。"""
+    import torch
+
+    raw = device if device not in (None, "") else default
+    if raw == "auto":
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    if raw == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError(
+            "配置 device=cuda，但 torch.cuda.is_available()=False。"
+            "请安装 CUDA 版 torch，或改回 device: cpu/auto。"
+        )
+    return raw
 
 
 class SenseVoiceASR(ASRBase):
     def __init__(self, config: dict) -> None:
         super().__init__(config)
         self.model_dir = config.get("model_dir", "models/asr/SenseVoiceSmall")
-        self.device = resolve_device(config.get("device"))
+        self.device = _resolve_device(config.get("device"))
         self.language = config.get("language", "zh")
         self._model = None  # 懒加载
         self._postprocess = None
@@ -40,6 +54,10 @@ class SenseVoiceASR(ASRBase):
         # 本地加载（禁用自动更新/下载：传本地路径 + disable_update）
         self._model = AutoModel(model=self.model_dir, device=self.device, disable_update=True)
         self._postprocess = rich_transcription_postprocess
+
+    def warmup(self) -> None:
+        """启动时预加载 SenseVoice 权重到 GPU/CPU。"""
+        self._ensure_model()
 
     def transcribe(self, audio: bytes) -> ASRResult:
         self._ensure_model()

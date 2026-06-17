@@ -1,4 +1,4 @@
-"""TTS 抽象基类。输出 16-bit PCM；声明 is_local 供 offline 守卫校验。"""
+"""TTS 抽象基类。输出 16-bit PCM；is_local 标记是否为本地引擎。"""
 
 from __future__ import annotations
 
@@ -31,6 +31,9 @@ class TTSBase(abc.ABC):
     def synthesize(self, text: str) -> bytes:
         """整段文本 -> PCM。"""
         raise NotImplementedError
+
+    def warmup(self) -> None:
+        """预加载模型权重（语音模式启动时调用，避免首句合成卡顿）。"""
 
     def close(self) -> None:
         """释放资源。"""

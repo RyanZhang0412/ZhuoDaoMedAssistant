@@ -8,7 +8,13 @@ from __future__ import annotations
 
 from agent.agent import ToolAction, ToolResult, register_tool
 from agent.tools.context import get_context
-from medical.repository import PatientNotFoundError, PatientRecord, new_record
+from medical.repository import (
+    CLINICAL_CREATE_FIELDS,
+    PatientNotFoundError,
+    PatientRecord,
+    allocate_patient_id,
+    new_record,
+)
 
 __all__ = [
     "get_patient_record",
@@ -23,7 +29,7 @@ __all__ = [
 @register_tool(
     {
         "name": "get_patient_record",
-        "description": "按患者ID读取完整病历。需要查看某患者既往病历时调用。",
+        "description": "按患者ID或姓名读取完整病历。用户说姓名时也可直接传入姓名。",
         "input_schema": {
             "type": "object",
             "properties": {"patient_id": {"type": "string", "description": "患者ID"}},
@@ -34,7 +40,7 @@ __all__ = [
 def get_patient_record(patient_id: str) -> ToolResult:
     repo = get_context().repository
     try:
-        rec = repo.get(patient_id)
+        rec = repo.resolve(patient_id)
     except PatientNotFoundError:
         return ToolResult(action=ToolAction.REQLLM, result={"error": f"未找到患者 {patient_id}"})
     return ToolResult(action=ToolAction.REQLLM, result=rec.to_dict())
@@ -47,45 +53,56 @@ def get_patient_record(patient_id: str) -> ToolResult:
         "input_schema": {
             "type": "object",
             "properties": {
-                "patient_id": {"type": "string", "description": "患者ID（唯一）"},
+                "patient_id": {
+                    "type": "string",
+                    "description": "患者ID（可选；缺省按姓名拼音首字母自动生成，如卓小道->zxd001）",
+                },
                 "name": {"type": "string", "description": "姓名"},
                 "age": {"type": "integer", "description": "年龄"},
-                "diagnosis": {"type": "string", "description": "诊断，如 脑卒中"},
+                "gender": {"type": "string", "description": "性别，男/女"},
+                "diagnosis": {"type": "string", "description": "诊断，如 脑卒中、脑瘫"},
                 "affected_limb": {"type": "string", "description": "患肢，如 上肢/下肢"},
                 "muscle_strength": {"type": "integer", "description": "肌力 0-5 级"},
+                "balance_level": {"type": "string", "description": "平衡等级：差/中/良/正常"},
             },
-            "required": ["patient_id", "name"],
+            "required": ["name"],
         },
     }
 )
-def create_patient_record(patient_id: str, name: str, **fields) -> ToolResult:
+def create_patient_record(name: str, patient_id: str | None = None, **fields) -> ToolResult:
     repo = get_context().repository
-    if repo.exists(patient_id):
+    clean = {k: v for k, v in fields.items() if v is not None}
+    if not any(k in clean for k in CLINICAL_CREATE_FIELDS):
         return ToolResult(
             action=ToolAction.RESPONSE,
-            response=f"患者 {patient_id} 已存在，未重复建档",
+            response=f"请提供{name}的年龄、性别、诊断、患肢、肌力及平衡等级，再为其建档。",
         )
-    clean = {k: v for k, v in fields.items() if v is not None}
-    rec = new_record(patient_id, name, **clean)
+    pid = allocate_patient_id(repo, name, preferred=patient_id)
+    if repo.exists(pid):
+        return ToolResult(
+            action=ToolAction.RESPONSE,
+            response=f"患者 {pid} 已存在，未重复建档",
+        )
+    rec = new_record(pid, name, **clean)
     repo.create(rec)
     return ToolResult(
         action=ToolAction.RESPONSE,
-        result={"patient_id": patient_id},
-        response=f"已为患者 {name}（ID {patient_id}）建档",
+        result={"patient_id": pid},
+        response=f"已为患者 {name}（ID {pid}）建档",
     )
 
 
 @register_tool(
     {
         "name": "update_patient_record",
-        "description": "更新某患者的临床状态字段（如肌力、平衡、术后天数）。",
+        "description": "更新患者病历字段（姓名、性别、年龄、诊断、肌力、平衡等）。",
         "input_schema": {
             "type": "object",
             "properties": {
-                "patient_id": {"type": "string", "description": "患者ID"},
+                "patient_id": {"type": "string", "description": "患者ID或姓名"},
                 "updates": {
                     "type": "object",
-                    "description": "要更新的字段，如 {\"muscle_strength\": 3}",
+                    "description": "要更新的字段，如 {\"name\":\"汪昊祾\",\"gender\":\"男\",\"muscle_strength\": 3}",
                 },
             },
             "required": ["patient_id", "updates"],
@@ -95,7 +112,7 @@ def create_patient_record(patient_id: str, name: str, **fields) -> ToolResult:
 def update_patient_record(patient_id: str, updates: dict) -> ToolResult:
     repo = get_context().repository
     try:
-        rec = repo.get(patient_id)
+        rec = repo.resolve(patient_id)
     except PatientNotFoundError:
         return ToolResult(action=ToolAction.RESPONSE, response=f"未找到患者 {patient_id}")
 
@@ -109,6 +126,9 @@ def update_patient_record(patient_id: str, updates: dict) -> ToolResult:
     if not applied:
         return ToolResult(action=ToolAction.RESPONSE, response="没有可更新的有效字段")
 
+    from datetime import datetime
+
+    rec.updated_at = datetime.now().isoformat(timespec="seconds")
     repo.update(rec)
     return ToolResult(
         action=ToolAction.RESPONSE,
@@ -130,10 +150,17 @@ def update_patient_record(patient_id: str, updates: dict) -> ToolResult:
 )
 def delete_patient_record(patient_id: str) -> ToolResult:
     repo = get_context().repository
-    deleted = repo.delete(patient_id)
-    if not deleted:
+    # 先 resolve 到真实 patient_id（兼容 LLM 传 "wzc" 而文件名是 "wzc001" 的情况），
+    # 否则 delete 只做精确文件名匹配会误报"未找到"。
+    try:
+        rec = repo.resolve(patient_id)
+        real_id = rec.patient_id
+    except PatientNotFoundError:
         return ToolResult(action=ToolAction.RESPONSE, response=f"未找到患者 {patient_id}，无需删除")
-    return ToolResult(action=ToolAction.RESPONSE, response=f"已删除患者 {patient_id} 的本地病历")
+    deleted = repo.delete(real_id)
+    if not deleted:
+        return ToolResult(action=ToolAction.RESPONSE, response=f"未找到患者 {real_id}，无需删除")
+    return ToolResult(action=ToolAction.RESPONSE, response=f"已删除患者 {real_id}（{rec.name}）的本地病历")
 
 
 @register_tool(

@@ -34,11 +34,10 @@
 ZhuoDaoMedAssistant/
 ├── main.py                  # 入口：装配 + 文本 REPL（--text）
 ├── config/
-│   ├── config.yaml          # 模块/LLM provider/offline/路径
+│   ├── config.yaml          # 模块/LLM provider/路径
 │   ├── rules.yaml           # ★康复训练规则库（医生维护，不碰代码）
 │   └── system_prompt.txt    # Agent 系统提示
 ├── core/                    # 语音对话引擎
-│   ├── net_guard.py         # ★唯一 offline 守卫与异常类
 │   ├── robot.py             # 协调层
 │   ├── asr/ vad/ tts/       # 可插拔语音模块（仅本地引擎）
 │   └── llm/                 # ★LLMBase 统一抽象 + 多 provider 工厂
@@ -51,8 +50,7 @@ ZhuoDaoMedAssistant/
 │   └── tools/               # record / recommend / schedule 工具
 ├── memory/dialogue_memory.py# 对话记忆（与病历隔离）
 ├── data/{patients,schedules,dialogues}/  # 本地数据
-├── server/server.py         # 可选本地 Web（FastAPI，仅绑本地）
-└── tests/                   # 规则引擎/仓库/offline 守卫测试
+└── tests/                   # 规则引擎/仓库/agent 测试
 ```
 
 ## 安装
@@ -70,9 +68,6 @@ pip install openai          # provider=openai_compatible / ollama
 
 # 可选：本地大模型（移植服务器时）
 # pip install transformers torch   或   llama-cpp-python   或本地起 ollama
-
-# 可选：Web 界面
-# pip install fastapi uvicorn
 
 # 测试
 pip install pytest
@@ -112,9 +107,6 @@ python main.py --text
 
 # 聚焦某患者
 python main.py --text --patient P001
-
-# 本地 Web 界面（可选）
-python server/server.py     # 访问 http://127.0.0.1:8000/docs
 ```
 
 ## 维护康复规则（医生）

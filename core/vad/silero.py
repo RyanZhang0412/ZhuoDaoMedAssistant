@@ -40,6 +40,10 @@ class SileroVAD(VADBase):
         self._session = onnxruntime.InferenceSession(self.model_path)
         self.reset()
 
+    def warmup(self) -> None:
+        """启动时预加载 silero onnx 会话。"""
+        self._ensure()
+
     def reset(self) -> None:
         import numpy as np
 

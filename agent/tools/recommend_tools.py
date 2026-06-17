@@ -18,7 +18,7 @@ __all__ = ["recommend_rehab_plan", "explain_recommendation", "list_applicable_ru
 def _get_record(patient_id: str):
     repo = get_context().repository
     try:
-        return repo.get(patient_id), None
+        return repo.resolve(patient_id), None
     except PatientNotFoundError:
         return None, ToolResult(
             action=ToolAction.RESPONSE,

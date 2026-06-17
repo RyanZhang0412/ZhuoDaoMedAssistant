@@ -29,6 +29,9 @@ class ASRBase(abc.ABC):
         """整段 PCM -> 文本。"""
         raise NotImplementedError
 
+    def warmup(self) -> None:
+        """预加载模型权重（语音模式启动时调用，避免首句识别卡顿）。"""
+
     def reset(self) -> None:
         """清空流式内部状态。"""
 

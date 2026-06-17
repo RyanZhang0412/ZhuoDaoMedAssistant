@@ -87,6 +87,38 @@ rules:
         - 监测自主神经反射异常
       goal: 促进步行功能恢复
 
+  # ---------- 截肢 ----------
+  - name: 截肢-上肢-功能维持与残肢护理
+    priority: 75
+    conditions:
+      diagnosis: 截肢
+      affected_limb: 上肢
+    recommend:
+      mode: 残肢护理与健侧功能训练
+      frequency: 每日2次
+      duration_min: 30
+      intensity: 低
+      precautions:
+        - 残肢皮肤与幻肢痛监测
+        - 循序渐进，避免过度牵拉
+      goal: 维持健侧功能，为假肢适配做准备
+
+  - name: 截肢-下肢-平衡与步行准备
+    priority: 75
+    conditions:
+      diagnosis: 截肢
+      affected_limb: 下肢
+      balance_level: ["差", "中", "良", "正常"]
+    recommend:
+      mode: 平衡训练与辅具适配
+      frequency: 每日1次
+      duration_min: 30
+      intensity: 中
+      precautions:
+        - 配备防跌倒保护
+        - 评估假肢或轮椅适配需求
+      goal: 改善平衡，为步行或轮椅转移做准备
+
   # ---------- 骨科 / 关节置换术后 ----------
   - name: 膝关节置换术后-早期活动度训练
     priority: 85

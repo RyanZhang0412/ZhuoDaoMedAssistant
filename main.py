@@ -2,10 +2,9 @@
 
 装配顺序严格自底向上（见交叉验证结论）：
   load_config
-    -> enforce_offline (if offline)      # 最外层 socket 级禁网兜底
     -> PatientRepository
     -> RuleEngine / Recommender
-    -> LLM (create_llm 工厂，端点早失败校验)
+    -> LLM (create_llm 工厂)
     -> Scheduler
     -> LocalAgent + bind_context         # 把 repository/recommender/scheduler 注入工具
     -> Robot (注入 agent + memory + 可选 asr/vad/tts)
@@ -30,7 +29,6 @@ from pathlib import Path
 from agent.agent import LocalAgent
 from agent.tools.schedule_tools import Scheduler
 from core.llm import create_llm
-from core.net_guard import enforce_offline
 from core.robot import Robot
 from medical.repository import PatientRepository
 from medical.rules import RuleEngine
@@ -76,7 +74,6 @@ def build_agent(config: dict) -> LocalAgent:
     # 1) 病历仓库
     repository = PatientRepository(
         str(ROOT / storage.get("patients_dir", "data/patients")),
-        keep_backup=storage.get("keep_backup", True),
     )
 
     # 2) 规则 + 推荐服务
@@ -104,15 +101,25 @@ def build_agent(config: dict) -> LocalAgent:
     return agent
 
 
-def build_robot(config: dict, agent: LocalAgent) -> Robot:
-    """装配 Robot（注入 agent + memory + 可选语音模块）。"""
+def build_robot(config: dict, agent: LocalAgent, *, voice: bool = True) -> Robot:
+    """装配 Robot（注入 agent + memory + 长期记忆 + 可选语音模块）。"""
     storage = config.get("storage", {})
     memory = DialogueMemory(str(ROOT / storage.get("dialogue_dir", "data/dialogues")))
 
+    # 长期偏好记忆（与病历隔离；可在 config.long_term_memory.enabled 关闭）
+    long_term = None
+    lt_cfg = config.get("long_term_memory", {})
+    if lt_cfg.get("enabled", True):
+        from memory.long_term import LongTermMemory
+
+        long_term = LongTermMemory(
+            str(ROOT / lt_cfg.get("dir", "data/dialogues/long_term"))
+        )
+
     asr = vad = tts = None
-    # 语音模块按需装配（文本模式不需要）
+    # 语音模块按需装配（--text 或 voice=False 时不加载，避免强依赖 torch）
     selected = config.get("selected_module", {})
-    if selected.get("_enable_voice"):  # 显式开关，默认关闭
+    if voice and selected.get("_enable_voice"):
         from core.asr import create_asr
         from core.tts import create_tts
         from core.vad import create_vad
@@ -121,7 +128,9 @@ def build_robot(config: dict, agent: LocalAgent) -> Robot:
         vad = create_vad(selected["VAD"], config.get("VAD", {}).get(selected["VAD"], {}))
         tts = create_tts(selected["TTS"], config.get("TTS", {}).get(selected["TTS"], {}))
 
-    return Robot(config, agent=agent, memory=memory, asr=asr, vad=vad, tts=tts)
+    return Robot(
+        config, agent=agent, memory=memory, long_term=long_term, asr=asr, vad=vad, tts=tts
+    )
 
 
 def _read_system_prompt(rel: str | None) -> str | None:
@@ -152,8 +161,11 @@ def run_text_repl(robot: Robot, patient_id: str | None) -> None:
             break
         if not text:
             continue
-        resp = robot.handle_text(text, patient_id=patient_id)
-        print(f"助手 > {resp.text}\n")
+        # 流式打印（与语音管线同一条 chat_stream 链路，顺带验证流式可用）
+        print("助手 > ", end="", flush=True)
+        for delta in robot.handle_text_stream(text, patient_id=patient_id):
+            print(delta, end="", flush=True)
+        print("\n")
 
 
 # --------------------------------------------------------------------------- #
@@ -168,17 +180,18 @@ def main() -> None:
 
     config = load_config(args.config)
 
-    # offline 硬约束：任何组件构造之前先装上 socket 兜底
-    if config.get("offline"):
-        enforce_offline(config.get("offline_allow_hosts", ("127.0.0.1", "localhost")))
-        print("[offline] 已启用禁网兜底，仅放行本地地址")
-
     agent = build_agent(config)
-    robot = build_robot(config, agent)
+    use_voice = bool(config.get("selected_module", {}).get("_enable_voice")) and not args.text
+    robot = build_robot(config, agent, voice=use_voice)
 
-    if args.text or not config.get("selected_module", {}).get("_enable_voice"):
+    if args.text or not use_voice:
         run_text_repl(robot, args.patient)
     else:
+        voice_cfg = config.get("voice_loop", {})
+        if voice_cfg.get("preload_models", True):
+            print("[启动] 正在预加载语音模型，请稍候…")
+            robot.warmup()
+            print("[启动] 语音模型就绪。\n")
         try:
             robot.run_voice_session(patient_id=args.patient)
         except KeyboardInterrupt:

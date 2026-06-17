@@ -28,6 +28,20 @@ def test_rule_match_basic(engine):
     assert result.reasons
 
 
+def test_amputation_rule_match(engine):
+    rec = PatientRecord(
+        patient_id="zry001",
+        name="张瑞阳",
+        diagnosis="截肢",
+        affected_limb="上肢",
+        muscle_strength=3,
+        balance_level="良",
+    )
+    result = engine.evaluate(rec.condition_view())
+    assert result.matched
+    assert "残肢" in (result.mode or "")
+
+
 def test_rule_determinism(engine):
     rec = PatientRecord(
         patient_id="P1", name="张三", diagnosis="脑卒中", affected_limb="下肢",

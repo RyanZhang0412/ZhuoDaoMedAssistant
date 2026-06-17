@@ -129,6 +129,18 @@ class MicStream:
                 frame = apply_input_gain(frame, gain)
             yield frame
 
+    def flush(self) -> int:
+        """丢弃驱动缓冲里积压的帧（thinking 期间的漏音/底噪），返回丢弃帧数。"""
+        assert self._stream is not None, "MicStream 需在 with 块内使用"
+        dropped = 0
+        try:
+            while self._stream.read_available >= self.frame_samples:
+                self._stream.read(self.frame_samples)
+                dropped += 1
+        except Exception:
+            pass
+        return dropped
+
 
 def apply_input_gain(pcm: bytes, gain: float) -> bytes:
     """软件增益：放大麦克风 PCM，并限幅到 int16 范围。"""

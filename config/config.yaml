@@ -1,17 +1,9 @@
 # ============================================================
 # ZhuoDaoMedAssistant 全局配置
 # 移植到服务器只改本文件，不改代码：
-#   - 开发期：offline=false + llm.provider=openai_compatible（用 API）
-#   - 上线期：offline=true  + llm.provider=ollama/local（本地部署）
+#   - 开发期：llm.provider=openai_compatible（用 API）
+#   - 上线期：llm.provider=ollama/local（本地部署）
 # ============================================================
-
-# ---- 不联网总开关 ----
-# true 时在进程启动最早期 monkey-patch socket，拦截一切非本地出口，
-# 任何对外连接抛 OfflineViolationError，防止患者隐私静默外发。
-offline: false
-offline_allow_hosts:        # offline=true 时仅放行这些主机
-  - 127.0.0.1
-  - localhost
 
 # ---- 模块选择 (ASR/VAD/TTS 选具体实现；LLM 统一走下面 llm.provider) ----
 selected_module:
@@ -27,10 +19,9 @@ llm:
   temperature: 0.3              # 医疗场景偏保守
   max_tokens: 384               # 语音播报宜短；文本模式可改大
   openai_compatible:
-    # Gemini 的 OpenAI 兼容端点（也兼容 DeepSeek/Qwen/智谱，换 base_url+model 即可）
-    base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
-    api_key: sk-a498f0b87c454b51bc3121a287bb0ea3
-    model: qwen3.5-35b-a3b
+    base_url: http://192.168.1.63:1234/v1          # LM Studio 局域网 OpenAI 兼容端点
+    api_key: sk-lm-SivDDUvw:l5dL5dR4qx9Sp16FWtCd
+    model: qwen/qwen3.6-35b-a3b
   anthropic:
     api_key: ${ANTHROPIC_API_KEY}
     model: claude-opus-4-8
@@ -53,8 +44,8 @@ VAD:
     model_path: models/vad/silero_vad.onnx
     threshold: 0.3
     sampling_rate: 16000
-    min_silence_ms: 500
-    min_speech_ms: 250
+    min_silence_ms: 650
+    min_speech_ms: 150
 TTS:
   KokoroTTS:
     model_dir: models/tts/kokoro
@@ -62,24 +53,59 @@ TTS:
     voice: zf_001                          # 官方演示音色；全部见 models/tts/kokoro/voices/
     speed: auto                            # auto=按句长调速(官方推荐)；或固定 0.9~1.1
     device: cuda
+    warmup_inference: true                 # 预加载后再合成极短句，预热 GPU 推理
 
-# ---- 实时语音循环（麦克风 / VAD 切句）----
+# ---- 实时语音循环（麦克风 / VAD 切句 / 流式播报）----
+# 切句逻辑见 core/voice_segmenter.py；帧长 512@16kHz ≈ 32ms/帧。
 voice_loop:
-  input_gain: 4              # 4 会把底噪放大，易误触发 VAD
-  interrupt_on_speech: true   # 戴耳机时建议 false，避免 TTS 漏音被当成你说话
-  record: true                # 每轮对话保存录音到 record_dir
-  record_dir: data/recordings # 每次会话一个子目录
-  record_assistant: true      # 同时保存助手 TTS 音频
-  # input_device: 1            # 可选：指定麦克风设备号；启动日志里会打印 #N 名称
-  # debug_level_threshold: 100 # 调低可看到更弱的 mic 电平（默认 150）
+  preload_models: true        # 启动时预加载 ASR/VAD/TTS，避免首句才加载卡顿
+  input_gain: 4               # 麦克风增益（降噪麦可适当加大）
+  # input_device: 1           # 可选：指定麦克风设备号；启动日志会打印 #N 名称
+
+  # --- 句首 / 句尾（未写则继承 VAD.min_speech_ms / min_silence_ms 换算为帧数）---
+  pre_speech_frames: 6        # 空闲聆听时句首回溯帧数（6≈192ms）
+  # min_speech_frames: 5      # 最短有效语音帧数，默认 VAD.min_speech_ms÷32
+  # silence_frames_end: 20    # 句尾静音帧数，默认 VAD.min_silence_ms÷32（650ms→20帧）
+  max_utterance_frames: 500   # 单句最长帧数上限（防一直不收尾）
+
+  # --- 电平辅助（VAD 反应慢时保句首/句中）---
+  energy_onset_peak: 1500     # peak≥此值视为「像人声」；0=仅依赖 VAD
+  energy_tail_ratio: 0.45     # 句中 tail 门控 = onset_peak×ratio
+  energy_tail_min_peak: 400   # tail 门控下限
+  onset_max_frames: 30        # 电平命中后最多预攒帧数（≈960ms）
+  onset_grace_silence_frames: 5  # 电平命中后允许短暂低电平仍继续预攒
+
+  # --- barge-in（播报中打断）---
+  interrupt_on_speech: true
+  interrupt_require_vad: true       # true=打断只认 VAD 语音，纯能量噪音不打断（推荐）
+  interrupt_min_speech_frames: 3   # 连续 N 帧 VAD 语音才打断（≈N×32ms）
+  # barge_prefetch_frames: 15    # 播报时句首回溯；默认 pre×2+interrupt_min
+  barge_streak_reset_silence: 2    # 连续 N 帧非语音则清零打断计数
+  post_barge_silence_frames: 12    # 打断后句尾多等帧数，防切太早
+
+  # --- 流式 TTS / 提醒 / 录音 ---
+  tts_min_sentence_chars: 6   # 流式按句送 TTS 的最短句长
+  reminder_check_interval_s: 30   # 空闲检查到期康复提醒；0=关闭
+  record: true
+  record_dir: data/recordings
+  record_assistant: true
+
+  # --- 调试 ---
+  debug: true
+  # debug_frame_interval: 20
+  # debug_level_threshold: 100  # 调低可看到更弱的 mic 电平
+
+# ---- 长期记忆（仅沟通偏好摘要，与病历严格隔离）----
+long_term_memory:
+  enabled: true
+  dir: data/dialogues/long_term
+  update_every_turns: 8       # 每 N 轮对话后台用 LLM 增量更新一次摘要
 
 # ---- 数据存储 (本地 JSON，不联网) ----
 storage:
   patients_dir: data/patients      # 每患者一个 {patient_id}.json
   schedule_dir: data/schedules     # 康复提醒排期
   dialogue_dir: data/dialogues     # 对话记忆（与正式病历严格隔离）
-  keep_backup: true                # 写入前备份旧文件
-  lock_timeout_sec: 5              # 文件锁超时
 
 # ---- 规则引擎 ----
 rules:
@@ -89,13 +115,3 @@ rules:
 agent:
   system_prompt_file: config/system_prompt.txt
   max_tool_rounds: 5               # function-calling 最大轮数，防死循环
-
-# ---- 可选本地 Web 界面 ----
-server:
-  host: 127.0.0.1                  # 仅绑本地，不对外
-  port: 8000
-
-# ---- 日志 ----
-log:
-  level: INFO
-  file: data/logs/app.log

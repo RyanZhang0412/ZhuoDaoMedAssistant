@@ -35,5 +35,8 @@ class VADBase(abc.ABC):
         """单帧是否为语音。"""
         raise NotImplementedError
 
+    def warmup(self) -> None:
+        """预加载模型权重（语音模式启动时调用）。"""
+
     def reset(self) -> None:
         """清空有状态累积。"""

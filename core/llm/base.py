@@ -3,11 +3,14 @@
 按交叉验证结论收口：整个项目只有这一个 LLM 抽象基类 ``LLMBase``，
 medical/service.py 与 agent/agent 都从这里 import，禁止另立第二套命名或方法名。
 
-统一接口（两个方法）：
+统一接口（三个方法）：
   - chat(messages, *, system, tools, tool_choice, max_tokens) -> LLMResponse
       普通对话 + function calling 都走这个。tools 非空时支持工具调用。
   - stream_chat(messages, *, system, max_tokens) -> Iterator[str]
       流式纯文本（供语音 TTS 尽早播放）。
+  - stream_chat_tools(messages, *, system, tools, ...) -> Generator[str, None, LLMResponse]
+      流式 + 工具：yield 文本增量，generator return 完整 LLMResponse（含 tool_calls）。
+      基类提供非流式退化实现；OpenAI 兼容 provider 覆写为真流式（语音低延迟的关键）。
 
 provider 无关的中间表示：
   - Message(role, content, tool_calls, tool_call_id)  —— 统一消息
@@ -22,7 +25,7 @@ from __future__ import annotations
 
 import abc
 from dataclasses import dataclass, field
-from typing import Any, Iterator
+from typing import Any, Generator, Iterator
 
 __all__ = ["Message", "ToolCall", "LLMResponse", "LLMBase"]
 
@@ -81,7 +84,6 @@ class LLMBase(abc.ABC):
     """LLM provider 的统一抽象基类（全系统唯一权威）。
 
     所有 provider（openai_compatible / anthropic / ollama / local）实现此接口。
-    构造时应调用 core.net_guard.assert_local_endpoint 校验端点（offline 早失败层）。
     """
 
     def __init__(self, config: dict) -> None:
@@ -119,6 +121,36 @@ class LLMBase(abc.ABC):
     ) -> Iterator[str]:
         """流式纯文本输出（不含工具调用），供语音 TTS 尽早播放。"""
         raise NotImplementedError
+
+    def stream_chat_tools(
+        self,
+        messages: list[Message],
+        *,
+        system: str | None = None,
+        tools: list[dict] | None = None,
+        tool_choice: str | None = None,
+        max_tokens: int | None = None,
+    ) -> Generator[str, None, LLMResponse]:
+        """流式对话 + 工具调用：yield 文本增量，最终 return 完整 LLMResponse。
+
+        语音管线用法（agent.chat_stream）：
+            resp = yield from llm.stream_chat_tools(...)
+            if resp.tool_calls: ...回灌工具结果再循环...
+
+        基类默认实现退化为非流式 chat（保证所有 provider 可用）；
+        OpenAICompatibleLLM 覆写为真流式。
+        """
+        resp = self.chat(
+            messages,
+            system=system,
+            tools=tools,
+            tool_choice=tool_choice,
+            max_tokens=max_tokens,
+        )
+        # 纯文本回复才整段 yield；带工具调用时文本是"调用前导语"，由调用方决定怎么用
+        if resp.text and not resp.tool_calls:
+            yield resp.text
+        return resp
 
     def close(self) -> None:
         """释放底层资源（如本地模型）。默认 no-op。"""

@@ -41,9 +41,12 @@ class VoiceSessionRecorder:
         (self.session_dir / f"{prefix}_user.txt").write_text(text, encoding="utf-8")
         return wav_path
 
-    def save_assistant(self, pcm: bytes, text: str, sample_rate: int) -> Path:
-        prefix = f"{self._turn:03d}"
+    def save_assistant(self, pcm: bytes, text: str, sample_rate: int, *, turn: int | None = None) -> Path:
+        """保存助手音频。turn 应与本轮 save_user 返回的轮次一致（流式 TTS 异步回调时必须显式传入）。"""
+        t = turn if turn is not None else self._turn
+        prefix = f"{t:03d}"
         wav_path = self.session_dir / f"{prefix}_assistant.wav"
-        write_pcm_wav(wav_path, pcm, sample_rate)
+        if pcm:
+            write_pcm_wav(wav_path, pcm, sample_rate)
         (self.session_dir / f"{prefix}_assistant.txt").write_text(text, encoding="utf-8")
         return wav_path
