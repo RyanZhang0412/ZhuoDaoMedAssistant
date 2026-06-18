@@ -116,3 +116,34 @@ def test_create_flow_does_not_update_existing_patient():
     assert call.arguments["age"] == 11
     assert call.arguments["gender"] == "男"
     assert call.arguments["patient_id"] != "whl001"
+
+
+def test_delete_intent_not_hijacked_by_direct_tools():
+    """「删除患者 whl002」不应被直连层误当成肌力更新。"""
+    build_agent(load_config())
+    history = [
+        {"role": "user", "content": "whl"},
+        {
+            "role": "assistant",
+            "content": "汪昊祾 (whl001) 病历：22岁，男，偏瘫，患肢上肢，肌力5级。",
+        },
+    ]
+    assert try_direct_tool_call("删除患者whl002", history) is None
+
+
+def test_parse_muscle_strength_ignores_patient_id_digits():
+    assert parse_muscle_strength("删除患者whl002") is None
+    assert parse_muscle_strength("3级") == 3
+
+
+def test_resolve_patient_id_prefers_query_over_history():
+    build_agent(load_config())
+    history = [
+        {
+            "role": "assistant",
+            "content": "汪昊祾 (whl001) 病历：22岁，男，偏瘫，患肢上肢，肌力5级。",
+        },
+    ]
+    from agent.direct_tools import _resolve_patient_id
+
+    assert _resolve_patient_id(history, None, query="删除患者whl002") == "whl002"

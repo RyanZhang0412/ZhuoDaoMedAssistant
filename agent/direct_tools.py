@@ -25,6 +25,8 @@ _BALANCE_ASK = re.compile(r"平衡")
 _LIMB_ASK = re.compile(r"患肢|上肢|下肢|下身")
 _SUPPLEMENT = re.compile(r"补充")
 _GENDER_CORRECTION = re.compile(r"性别|说过.*男|说过.*女|漏了|没记|没写|更正")
+# 删除/移除类完整指令交给 LLM 选 delete 工具，直连层只处理碎片补字段。
+_STRUCTURAL_WRITE_RE = re.compile(r"删除|移除|删掉")
 _PID_RE = re.compile(r"([A-Za-z]{2,8}\d{2,6})", re.I)
 _LIMB_VALUES = ("双上肢", "双下肢", "四肢", "上肢", "下肢")
 _BALANCE_BY_SCORE = {0: "差", 1: "差", 2: "中", 3: "良", 4: "良", 5: "正常"}
@@ -169,6 +171,14 @@ def _resolve_patient_id(
         except PatientNotFoundError:
             pass
 
+    # 当前句写明的 ID 优先于历史上下文（避免「删除 whl002」却命中历史里的 whl001）。
+    match = _PID_RE.search(query)
+    if match:
+        try:
+            return repo.resolve(match.group(1)).patient_id
+        except PatientNotFoundError:
+            pass
+
     focus = f"{query}\n{_recent_blob(history, 6)}"
     focus_py = pinyin_key(focus)
     for pid in repo.list_ids():
@@ -176,6 +186,10 @@ def _resolve_patient_id(
             rec = repo.get(pid)
         except (PatientNotFoundError, Exception):
             continue
+        if rec.name and rec.name in query:
+            return rec.patient_id
+        if rec.patient_id.lower() in query.lower():
+            return rec.patient_id
         if rec.name and rec.name in focus:
             return rec.patient_id
         if rec.patient_id.lower() in focus.lower():
@@ -196,7 +210,7 @@ def _resolve_patient_id(
         except PatientNotFoundError:
             continue
 
-    match = _PID_RE.search(query) or _PID_RE.search(_recent_blob(history, 4))
+    match = _PID_RE.search(_recent_blob(history, 4))
     if match:
         try:
             return repo.resolve(match.group(1)).patient_id
@@ -215,7 +229,8 @@ def parse_muscle_strength(query: str) -> int | None:
     if compact.isdigit():
         val = int(compact)
         return val if 0 <= val <= 5 else None
-    match = re.search(r"([0-5一二三四五])[级]?", text)
+    # 不把 patient_id 里的数字当肌力（如 whl002 里的 0）。
+    match = re.search(r"(?<![a-zA-Z0-9])([0-5一二三四五])[级]?", text)
     if match:
         ch = match.group(1)
         if ch.isdigit():
@@ -379,6 +394,8 @@ def try_direct_tool_call(
     """识别碎片回答并直连 update/get/create。"""
     q = query.strip()
     if not q:
+        return None
+    if _STRUCTURAL_WRITE_RE.search(q):
         return None
 
     fields = parse_clinical_fields(q)
